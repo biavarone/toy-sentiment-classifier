@@ -22,8 +22,7 @@ import os
 embeddings = {}
 
 with open('glove.twitter.27B.50d.txt') as glove:
-    head = [next(glove) for x in xrange(100)]
-    for line in head:
+    for line in glove:
         line = line.strip().split(" ")
         embeddings[str(line[0])] = [float(i) for i in line[1:]]
 
