@@ -1,11 +1,16 @@
+#! usr/bin/env python
+# -*- coding: utf-8 -*-
+
 import argparse
 import re
 import codecs
+import pandas as pd
+import numpy as np
 from feature_extractor import FeatureExtractor
 from sklearn import preprocessing
 from sklearn.feature_extraction import DictVectorizer
-from sklearn.model_selection import cross_val_score
-from sklearn.svm import LinearSVC
+from sklearn.model_selection import cross_validate
+from sklearn.svm import SVC
 from sklearn.externals import joblib
 import sklearn.metrics
 from evaluator import evaluate
@@ -13,224 +18,171 @@ import csv
 import tarfile
 import os
 
-class Sentence:
+# read embeddings and put them in an hashmap
+embeddings = {}
 
-  def __init__(self):
-    self.tokens = []
+with open('glove.twitter.27B.50d.txt') as glove:
+    head = [next(glove) for x in xrange(100)]
+    for line in head:
+        line = line.strip().split(" ")
+        embeddings[str(line[0])] = [float(i) for i in line[1:]]
 
-  def add_token(self, token):
-    self.tokens.append(token)
-
-class Document(object):
-
-  def __init__(self):
-    self.sentences = []
-
-  def add_sentence(self, sentence):
-    self.sentences.append(sentence)
-
-  def get_tokens(self):
-    return [token for sentence in self.sentences for token in sentence.tokens]
 
 class Token:
 
-  def __init__(self, word, lemma, pos, cpos):
-    self.word = word
-    self.lemma = lemma
-    self.cpos = cpos
-    self.pos = pos
+    def __init__(self, word, lemma, pos, cpos):
+        self.word = word
+        self.lemma = lemma
+        self.cpos = cpos
+        self.pos = pos
+
+
+class Sentence:
+
+    def __init__(self):
+        self.tokens = []
+
+    def add_token(self, token):
+        self.tokens.append(token)
+
+
+class Document(object):
+
+    def __init__(self):
+        self.sentences = []
+
+    def add_sentence(self, sentence):
+        self.sentences.append(sentence)
+
+    def get_tokens(self):
+        return [token for sentence in self.sentences for token in sentence.tokens]
+
 
 class InputReader(object):
 
-  def __init__(self, input_file_name):
-    self.current_sentence = Sentence()
-    self.input_file_name = input_file_name
+    def __init__(self, input_file_name):
+        self.current_sentence = Sentence()
+        self.input_file_name = input_file_name
 
-  def generate_documents(self):
-    current_document = Document()
-    current_sentence = Sentence()
-    self.input_file = codecs.open(self.input_file_name, 'r', 'utf-8')
-    while True:
-      l = self.input_file.readline()
-      if l == '\n':
-        current_document.add_sentence(current_sentence)
-        current_sentence = Sentence()
-      elif "<doc" in l:
+    def generate_documents(self):
         current_document = Document()
+        current_sentence = Sentence()
+        self.input_file = codecs.open(self.input_file_name, 'r', 'utf-8')
+        while True:
+            l = self.input_file.readline()
+            if l == '\n':
+                current_document.add_sentence(current_sentence)
+                current_sentence = Sentence()
+            elif "newdoc" in l:
+                if current_document.sentences:
+                    yield current_document
+                current_document = Document()
+                # Read ID
+                if "id" in l:
+                    current_document.id = re.compile('(\d+)').findall(l)[0]
+                else:
+                    current_document.id = "0"
 
-        # Read ID
-        if "id" in l:
-          current_document.id = re.compile('id="(.*?)"').findall(l)[0]
-        else:
-          current_document.id = "0"
-
-        # Read labels
-        is_positive, is_negative = False, False
-        if ' pos="1"' in l or 'opos="1"' in l or "positive" in l:
-          is_positive = True
-        if ' neg="1"' in l or 'oneg="1"' in l or "negative" in l:
-          is_negative = True
-        if is_positive and is_negative:
-          current_document.label = "POS_NEG"
-        elif is_positive:
-          current_document.label = "POS"
-        elif is_negative:
-          current_document.label = "NEG"
-        else:
-          current_document.label = "O"
-      elif "</doc>" in l:
-        yield current_document
-      elif l == '':
-        raise StopIteration
-      else:
-        split_token = l.rstrip('\n').split("\t")
-        tok = Token(split_token[1], split_token[2],
-                    split_token[3], split_token[4])
-        current_sentence.add_token(tok)
+                # Read labels
+                # label neutro se 00, positivo 10, posneg 11, - non gestisce n label, è sempre una
+                # TODO cambiare la funzione e decidere come assegnare label
+                # TODO n modelli - leggere le label con un flag per capire quale label leggere, oppure leggere colonna diversa
+                # passare come feature la label per vedere se è corretto il classificatore
+                is_positive, is_negative = False, False
+                if 'emo=1' in l:
+                    is_positive = True
+                if 'emo=0' in l:
+                    is_negative = True
+                if is_positive:
+                    current_document.label = "POS"
+                elif is_negative:
+                    current_document.label = "NEG"
+                else:
+                    current_document.label = "O"
+            elif '#' in l and 'newdoc' not in l:
+                pass
+            elif l == '':
+                current_document.add_sentence(current_sentence)
+                yield current_document
+                raise StopIteration
+            else:
+                split_token = l.rstrip('\n').split("\t")
+                tok = Token(split_token[1], split_token[2],
+                            split_token[3], split_token[4])
+                current_sentence.add_token(tok)
 
 
 class ToySentimentClassifier(object):
 
-  def __init__(self):
-    self.feature_extractor = FeatureExtractor()
+    def __init__(self):
+        self.feature_extractor = FeatureExtractor()
 
-  def extract_features(self, doc):
-    all_features = {}
-    for i in range(1, 3):
-      all_features.update(self.feature_extractor.extract_word_ngrams(doc, i))
-    for i in range(1, 3):
-      all_features.update(self.feature_extractor.extract_lemma_ngrams(doc, i))
-    for i in range(1, 3):
-      all_features.update(self.feature_extractor.compute_n_chars(doc, i))
-    all_features.update(self.feature_extractor.compute_document_length(doc))
-    return all_features
+    def extract_features(self, doc):
+        all_features = {}
+        for i in range(1, 4):  # range numero di ngrammi da calcolare
+            all_features.update(
+                self.feature_extractor.extract_word_ngrams(doc, i))  # restituisce features degli ngrammi
+        for i in range(1, 4):
+            all_features.update(self.feature_extractor.extract_lemma_ngrams(doc, i))
+        for i in range(3, 6):
+            all_features.update(self.feature_extractor.compute_n_chars(doc, i))
+        all_features.update(self.feature_extractor.compute_document_length(doc))
+        all_features.update(self.feature_extractor.compute_embeddings(doc, embeddings))
+        return all_features
 
-  def train(self, model_name, input_file_name):
-    reader = InputReader(input_file_name)
-    all_docs = []
-    for doc in reader.generate_documents():
-      doc.features = self.extract_features(doc)
-      all_docs.append(doc)
+    def train(self, model_name, input_file_name):
+        reader = InputReader(input_file_name)
+        all_docs = []
+        for doc in reader.generate_documents():
+            doc.features = self.extract_features(doc)
+            all_docs.append(doc)  # lista con documenti+features del documento
 
-    # Encoding of samples
-    all_collected_feats = [doc.features for doc in all_docs]
-    X_dict_vectorizer = DictVectorizer(sparse=True)
-    encoded_features = X_dict_vectorizer.fit_transform(all_collected_feats)
+        # Encoding of samples
+        all_collected_feats = [doc.features for doc in all_docs]
+        # trasformare features in vettori (vettore singolo doc, matrice collezione di documenti)
+        X_dict_vectorizer = DictVectorizer(
+            sparse=True)  # funzione di sklearn - prende un dizionario key:id feature value: valore feature
+        # trasforma in matrice
+        encoded_features = X_dict_vectorizer.fit_transform(
+            all_collected_feats)  # crea matrice (sparse=True matrice con hashmap)
 
-    # Scale to increase performances and reduce training time
-    scaler = preprocessing.StandardScaler(with_mean=False).fit(encoded_features)
-    encoded_scaled_features = scaler.transform(encoded_features)
+        # Scale to increase performances and reduce training time
+        # vogliamo che ogni feature contribuisca in modo equo - scalare feature fra 0 e 1
+        scaler = preprocessing.StandardScaler(with_mean=False).fit(
+            encoded_features)  # calcola i parametri che devono essere usati per scalare
+        encoded_scaled_features = scaler.transform(encoded_features)  # scala i parametri
 
-    # Encoding of labels
-    label_encoder = preprocessing.LabelEncoder()
-    label_encoder.fit([doc.label for doc in all_docs])
-    encoded_labels = label_encoder.transform([doc.label for doc in all_docs])
+        # Encoding of labels (Y)
+        label_encoder = preprocessing.LabelEncoder()  # è multilabel, anche le classi vanno scalate
+        label_encoder.fit([doc.label for doc in all_docs])
+        encoded_labels = label_encoder.transform([doc.label for doc in all_docs])
 
-    # Classifier Algorithm
-    clf = LinearSVC()
+        # Classifier Algorithm
+        scoring = ['accuracy', 'precision', 'recall', 'f1']
+        clf = SVC(kernel='linear', C=1e3)
+        # Cross validation
+        cross_val_scores = cross_validate(clf, encoded_scaled_features, encoded_labels, cv=10, scoring=scoring)
 
-    # Cross validation
-    cross_val_scores = cross_val_score(clf, encoded_scaled_features,
-                                       encoded_labels, scoring='f1_weighted')
-    print "Average F1 Weighted: %s" % (reduce(lambda x, y: x + y, cross_val_scores) / len(cross_val_scores),)
-
-    clf.fit(encoded_scaled_features, encoded_labels)
-
-    # Save model
-    joblib.dump(clf, 'clf.pkl')
-    joblib.dump(scaler, "scaler.pkl")
-    joblib.dump(label_encoder, "label_encoder.pkl")
-    joblib.dump(X_dict_vectorizer, open("vectorizer.pkl", "wb"))
-    tar = tarfile.open("%s" % model_name, "w")
-    for fname in ['clf.pkl', "scaler.pkl", "label_encoder.pkl", "vectorizer.pkl"]:
-      tar.add(fname)
-      os.remove(fname)
-    tar.close()
-
-  def evaluate_sentipolc(self, docs):
-    def clz_to_opos_oneg(clz):
-      if clz == "POS":
-        opos = 1
-        oneg = 0
-      if clz == "NEG":
-        opos = 0
-        oneg = 1
-      if clz == "O":
-        opos = 0
-        oneg = 0
-      if clz == "POS_NEG":
-        opos = 1
-        oneg = 1
-      return (opos, oneg)
-
-    predicted_csv_file = open("predicted.csv", 'w')
-    field_names = ["id", "sub", "opos", "oneg", "iro", "lpos", "lneg", "top"]
-    writer = csv.DictWriter(predicted_csv_file, fieldnames=field_names)
-    for doc in docs:
-      opos, oneg = clz_to_opos_oneg(doc.labeled_prediction)
-      writer.writerow({'id': doc.id, 'opos': opos, 'oneg': oneg})
-    predicted_csv_file.close()
-
-    # Generate gold file
-    gold_csv_file = open("gold.csv", 'w')
-    writer = csv.DictWriter(gold_csv_file, fieldnames=field_names)
-    for doc in docs:
-      opos, oneg = clz_to_opos_oneg(doc.label)
-      writer.writerow({'id': doc.id, 'opos': opos, 'oneg': oneg})
-    gold_csv_file.close()
-
-    # Evaluation
-    evaluate("gold.csv", "predicted.csv")
-
-  def load_model(self, model_name):
-    tar = tarfile.open("%s" % model_name, 'r')
-    for tarinfo in tar:
-      f = tar.extractfile(tarinfo)
-      if tarinfo.name == "clf.pkl":
-        self.classifier = joblib.load(f)
-      if tarinfo.name == "scaler.pkl":
-        self.scaler = joblib.load(f)
-      if tarinfo.name == "label_encoder.pkl":
-        self.label_encoder = joblib.load(f)
-      if tarinfo.name == "vectorizer.pkl":
-        self.vectorizer = joblib.load(f)
-
-  def parse(self, input_file_name):
-    reader = InputReader(input_file_name)
-    all_docs = []
-    original_labels = []
-    predicted_labels = []
-    for doc in reader.generate_documents():
-      doc.features = self.extract_features(doc)
-      all_docs.append(doc)
-
-      # Encoding of samples
-      encoded_features = self.vectorizer.transform(doc.features)
-      encoded_scaled_features = self.scaler.transform(encoded_features)
-      predictions = self.classifier.predict(encoded_scaled_features)
-      labeled_prediction = self.label_encoder.inverse_transform(predictions)[0]
-      original_labels.append(doc.label)
-      predicted_labels.append(labeled_prediction)
-      doc.labeled_prediction = labeled_prediction
-    print sklearn.metrics.classification_report(original_labels,
-                                                predicted_labels)
-    self.evaluate_sentipolc(all_docs)
+        print('accuracy\tprecision\trecall\tf1\n')
+        print(str(np.average(cross_val_scores['test_accuracy']))
+              + '\t' + str(np.average(cross_val_scores['test_precision']))
+              + '\t' + str(np.average(cross_val_scores['test_recall']))
+              + '\t' + str(np.average(cross_val_scores['test_f1'])) + '\n')
 
 
 if __name__ == "__main__":
-  parser = argparse.ArgumentParser(description='Sentiment Classifier')
-  parser.add_argument('-i', '--input_file', help='The input file in CONLL Format', required=True)
-  parser.add_argument('-m', '--model_name', help='The model name', required=True)
-  parser.add_argument('-o', '--output_file', help='The output file')
-  parser.add_argument('-t', '--train', help='Trains the model', action='store_true')
-  args = parser.parse_args()
-  input_file = args.input_file
-  output_file = args.output_file
-  model_name = args.model_name
-  train_mode = args.train
-  classifier = ToySentimentClassifier()
-  if train_mode:
-    classifier.train(model_name, input_file)
-  else:
-    classifier.load_model(model_name)
-    classifier.parse(input_file)
+    parser = argparse.ArgumentParser(description='Sentiment Classifier')
+    parser.add_argument('-i', '--input_file', help='The input file in CONLL Format', required=True)
+    parser.add_argument('-m', '--model_name', help='The model name', required=True)
+    parser.add_argument('-o', '--output_file', help='The output file')
+    parser.add_argument('-t', '--train', help='Trains the model', action='store_true')
+    args = parser.parse_args()
+    input_file = args.input_file
+    output_file = args.output_file
+    model_name = args.model_name
+    train_mode = args.train
+    train_mode = True
+    classifier = ToySentimentClassifier()
+    if train_mode:
+        classifier.train(model_name, input_file)
+
