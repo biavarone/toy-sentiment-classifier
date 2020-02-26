@@ -4,25 +4,19 @@
 import argparse
 import re
 import codecs
-import pandas as pd
 import numpy as np
 from feature_extractor import FeatureExtractor
 from sklearn import preprocessing
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.model_selection import cross_validate
 from sklearn.svm import SVC
-from sklearn.externals import joblib
-import sklearn.metrics
-from evaluator import evaluate
-import csv
-import tarfile
-import os
 
 # read embeddings and put them in an hashmap
 embeddings = {}
 
 with open('glove.twitter.27B.50d.txt') as glove:
-    for line in glove:
+    head = [next(glove) for x in xrange(100)]
+    for line in head:
         line = line.strip().split(" ")
         embeddings[str(line[0])] = [float(i) for i in line[1:]]
 
@@ -126,7 +120,10 @@ class ToySentimentClassifier(object):
         for i in range(3, 6):
             all_features.update(self.feature_extractor.compute_n_chars(doc, i))
         all_features.update(self.feature_extractor.compute_document_length(doc))
-        all_features.update(self.feature_extractor.compute_embeddings(doc, embeddings))
+
+        # we_feats = self.feature_extractor.compute_embeddings(doc, embeddings)
+        # if we_feats:
+        #     all_features.update(we_feats)
         return all_features
 
     def train(self, model_name, input_file_name):

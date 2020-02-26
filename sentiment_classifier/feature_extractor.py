@@ -51,8 +51,9 @@ class FeatureExtractor(object):
         for word in words:
             if word in embeddings.keys():
                 sentence_embeddings.append(embeddings[word])
-        final_embedding = np.average(np.array(sentence_embeddings), axis=0)
-        embeddings_feats = {}
-        for i in range(len(final_embedding)):
-            embeddings_feats["vec_%s_avg" % i] = final_embedding[i]
-        return embeddings_feats
+        if sentence_embeddings:
+            final_embedding = np.average(np.array(sentence_embeddings), axis=0)
+            embeddings_feats = {}
+            for i in xrange(50):
+                embeddings_feats["vec_%s_avg" % str(i)] = final_embedding[i]
+            return embeddings_feats
