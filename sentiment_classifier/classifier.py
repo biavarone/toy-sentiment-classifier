@@ -63,6 +63,7 @@ class InputReader(object):
         self.input_file = codecs.open(self.input_file_name, 'r', 'utf-8')
         while True:
             l = self.input_file.readline()
+            # print(l)
             if l == '\n':
                 current_document.add_sentence(current_sentence)
                 current_sentence = Sentence()
@@ -77,7 +78,6 @@ class InputReader(object):
                     current_document.id = "0"
 
                 # Read labels
-                # label neutro se 00, positivo 10, posneg 11, - non gestisce n label, è sempre una
                 # TODO cambiare la funzione e decidere come assegnare label
                 # TODO n modelli - leggere le label con un flag per capire quale label leggere, oppure leggere colonna diversa
                 # passare come feature la label per vedere se è corretto il classificatore
@@ -121,9 +121,9 @@ class ToySentimentClassifier(object):
             all_features.update(self.feature_extractor.compute_n_chars(doc, i))
         all_features.update(self.feature_extractor.compute_document_length(doc))
 
-        # we_feats = self.feature_extractor.compute_embeddings(doc, embeddings)
-        # if we_feats:
-        #     all_features.update(we_feats)
+        we_feats = self.feature_extractor.compute_embeddings(doc, embeddings)
+        if we_feats:
+            all_features.update(we_feats)
         return all_features
 
     def train(self, model_name, input_file_name):
@@ -132,6 +132,7 @@ class ToySentimentClassifier(object):
         for doc in reader.generate_documents():
             doc.features = self.extract_features(doc)
             all_docs.append(doc)  # lista con documenti+features del documento
+        print(len(all_docs))
 
         # Encoding of samples
         all_collected_feats = [doc.features for doc in all_docs]
